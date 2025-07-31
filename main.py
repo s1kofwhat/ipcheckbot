@@ -3,12 +3,13 @@ import asyncio
 import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from flask import Flask
 import threading
 import os
-from dotenv import load_dotenv  # 🔁 Загрузка .env
+from dotenv import load_dotenv
 
-# 🔋 Загружаем .env (работает только локально, на Render — игнорируется)
+# 🔁 Загружаем .env (только для локальной разработки)
 load_dotenv()
 
 # === ТОКЕН БОТА ===
@@ -16,7 +17,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Токен бота не найден! Убедись, что добавил BOT_TOKEN в Secrets или в .env")
 
-# 🌐 Веб-сервер для keep-alive (чтобы Replit не засыпал)
+# 🌐 Веб-сервер для keep-alive (для Replit)
 app = Flask('')
 
 @app.route('/')
@@ -78,34 +79,80 @@ def get_ip_info(ip: str) -> str:
         print(f"🔹 Ошибка при запросе: {e}")
         return "❌ Произошла ошибка при обработке запроса."
 
+
+# 🎯 Клавиатура с кнопками
+def get_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🌐 Отправить свой IP")],
+            [KeyboardButton(text="❓ Как использовать?")]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False
+    )
+
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "👋 Привет! Отправь мне IP-адрес (например, <code>8.8.8.8</code>), "
-        "и я определю его геопозицию."
+        "👋 Привет! Я помогу определить геолокацию по IP-адресу.\n\n"
+        "Нажми кнопку ниже или отправь любой публичный IP (например, <code>8.8.8.8</code>).",
+        parse_mode="HTML",
+        reply_markup=get_keyboard()
     )
 
-@dp.message()
-async def handle_ip(message: types.Message):
-    ip = message.text.strip()
 
+@dp.message()
+async def handle_message(message: types.Message):
+    text = message.text.strip()
+
+    # 🌐 Обработка: "Отправить свой IP"
+    if text == "🌐 Отправить свой IP":
+        # Telegram передаёт IP пользователя через заголовки, но мы можем использовать сторонний сервис
+        try:
+            ip_response = requests.get("https://api.ipify.org", timeout=5)
+            if ip_response.status_code == 200:
+                user_ip = ip_response.text
+                sent = await message.reply(f"🔍 Определяем местоположение вашего IP: <code>{user_ip}</code>...", parse_mode="HTML")
+                result = get_ip_info(user_ip)
+                await sent.edit_text(result, parse_mode="HTML", disable_web_page_preview=True)
+            else:
+                await message.reply("❌ Не удалось определить ваш IP.")
+        except Exception as e:
+            print(f"🔹 Ошибка получения IP: {e}")
+            await message.reply("❌ Ошибка при определении вашего IP.")
+        return
+
+    # ❓ Обработка: "Как использовать?"
+    elif text == "❓ Как использовать?":
+        await message.reply(
+            "📘 <b>Как пользоваться ботом:</b>\n\n"
+            "1️⃣ Отправьте любой публичный IPv4-адрес, например: <code>8.8.8.8</code>\n"
+            "2️⃣ Бот покажет страну, город и координаты\n"
+            "3️⃣ Нажмите на ссылку с координатами — откроется Google Карты\n\n"
+            "🔒 Приватные IP (вроде 192.168.0.1) не имеют геолокации.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 📬 Обработка введённого IP
     import re
-    if not re.fullmatch(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$", ip):
+    if not re.fullmatch(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$", text):
         await message.reply("❌ Введите корректный IPv4-адрес.")
         return
 
     private_ranges = [
-        ip.startswith("192.168."),
-        ip.startswith("10."),
-        ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31,
-        ip == "127.0.0.1"
+        text.startswith("192.168."),
+        text.startswith("10."),
+        text.startswith("172.") and 16 <= int(text.split(".")[1]) <= 31,
+        text == "127.0.0.1"
     ]
     if any(private_ranges):
         await message.reply("🔒 Это приватный (внутренний) IP-адрес. У него нет внешней геолокации.")
         return
 
     sent = await message.reply("🔍 Определяем местоположение...")
-    result = get_ip_info(ip)
+    result = get_ip_info(text)
 
     try:
         await sent.edit_text(result, parse_mode="HTML", disable_web_page_preview=True)
@@ -113,13 +160,15 @@ async def handle_ip(message: types.Message):
         print(f"🔹 Ошибка при отправке в Telegram: {e}")
         await sent.edit_text("❌ Не удалось отобразить результат.")
 
+
 async def main():
-    # 🔹 Запускаем веб-сервер (для Replit)
+    # Запускаем веб-сервер (для Replit)
     keep_alive()
     print("✅ Веб-сервер запущен для keep-alive")
 
     print("✅ Бот запущен и готов к работе.")
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     try:
